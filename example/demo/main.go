@@ -14,5 +14,5 @@ func main() {
 		return
 	}
 	println(l.Address())
-	l.Serve()
+	l.Sync()
 }
