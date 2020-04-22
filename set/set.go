@@ -4,17 +4,14 @@ import (
 	"sync"
 )
 
-var (
-	pool = sync.Pool{
-		New: func() interface{} {
-			return &Set{items: make(map[string]bool)}
-		},
-	}
-)
+var pool = sync.Pool{
+	New: func() interface{} {
+		return &Set{items: make(map[string]bool)}
+	},
+}
 
+// Set simple string set based on map, not thread-safe
 type Set struct {
-	sync.RWMutex
-
 	items map[string]bool
 }
 
@@ -27,30 +24,18 @@ func New(items []string) *Set {
 }
 
 func (s *Set) Add(item string) {
-	s.Lock()
-	defer s.Unlock()
-
 	s.items[item] = true
 }
 
 func (s *Set) Del(item string) {
-	s.Lock()
-	defer s.Unlock()
-
 	delete(s.items, item)
 }
 
 func (s *Set) Has(item string) bool {
-	s.RLock()
-	defer s.RUnlock()
-
 	return s.items[item]
 }
 
 func (s *Set) List() []string {
-	s.RLock()
-	defer s.RUnlock()
-
 	var list []string
 	for item := range s.items {
 		list = append(list, item)
@@ -59,16 +44,10 @@ func (s *Set) List() []string {
 }
 
 func (s *Set) Len() int {
-	s.RLock()
-	defer s.RUnlock()
-
 	return len(s.items)
 }
 
 func (s *Set) Diff(o *Set) (add, del []string) {
-	s.RLock()
-	defer s.RUnlock()
-
 	// add
 	for item := range o.items {
 		if !s.Has(item) {
@@ -86,9 +65,6 @@ func (s *Set) Diff(o *Set) (add, del []string) {
 
 // Collect cleans all items and put the set back to sync.Pool
 func (s *Set) Collect() {
-	s.Lock()
-	defer s.Unlock()
-
 	for k := range s.items {
 		delete(s.items, k)
 	}
