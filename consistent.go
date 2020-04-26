@@ -5,60 +5,66 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/pxLi-io/libra/set"
-
 	"github.com/cespare/xxhash"
+	ml "github.com/hashicorp/memberlist"
 )
 
 const (
-	keyReplicaFormat = "%s-%d"
+	distributionFormat = "%s-%d"
+
+	baseLoad      = 2
+	MinMultiplier = 1
+	MaxMultiplier = 1 << 4 // max load = 32
 )
 
 // Consistent simple consistent hashing
 // https://en.wikipedia.org/wiki/Consistent_hashing
 type Consistent struct {
-	Nodes   *set.Set
-	replica int
+	Stars *Map
 
 	ring map[uint64]string // consistent hash ring
-	hash []uint64          // sorted hash slice
+	hash []uint64            // sorted hash slice
 
 	sync.RWMutex
 }
 
 // NewConsistent ...
-func NewConsistent(nodes []string, replica int) *Consistent {
-	if replica < 1 {
-		replica = 1
-	}
+func NewConsistent(nodes []*ml.Node) *Consistent {
 	c := &Consistent{
-		Nodes:   set.New(nodes),
-		replica: replica,
+		Stars:   NewMap(nodes),
 		ring:    make(map[uint64]string),
 	}
 
-	c.Add(c.Nodes.List()...)
+	c.Add(NodeToStar(nodes)...)
 	return c
 }
 
-func (c *Consistent) Add(nodes ...string) {
+func (c *Consistent) Len() int {
+	c.RLock()
+	defer c.RUnlock()
+
+	return c.Stars.Len()
+}
+
+func (c *Consistent) Add(stars ...*Star) {
 	c.Lock()
 	defer c.Unlock()
 
 	exist := 0
-	for _, node := range nodes {
-		if c.Nodes.Has(node) {
+	for _, star := range stars {
+		if c.Stars.HasStar(star) {
 			exist++
 			continue
 		}
-		c.Nodes.Add(node)
-		for r := 0; r < c.replica; r++ {
-			h := hash(fmt.Sprintf(keyReplicaFormat, node, r))
+
+		c.Stars.Add(star)
+		for r := 0; r < star.Load; r++ {
+			h := hash(fmt.Sprintf(distributionFormat, star.ID, r))
 			c.hash = append(c.hash, h)
-			c.ring[h] = node
+			c.ring[h] = star.ID
 		}
 	}
-	if exist == len(nodes) {
+	if exist == len(stars) {
 		return
 	}
 
@@ -67,63 +73,61 @@ func (c *Consistent) Add(nodes ...string) {
 	})
 }
 
-func (c *Consistent) Del(nodes ...string) {
+func (c *Consistent) Del(stars ...*Star) {
 	c.Lock()
 	defer c.Unlock()
 
-	for _, node := range nodes {
-		if !c.Nodes.Has(node) {
+	for _, star := range stars {
+		if !c.Stars.HasStar(star) {
 			continue
 		}
-		c.Nodes.Del(node)
-		for r := 0; r < c.replica; r++ {
-			h := hash(fmt.Sprintf(keyReplicaFormat, node, r))
+		for r := 0; r < star.Load; r++ {
+			h := hash(fmt.Sprintf(distributionFormat, star.ID, r))
 			delete(c.ring, h)
 			c.delKeys(h)
 		}
+		c.Stars.Del(star)
 	}
 }
 
 func (c *Consistent) delKeys(h uint64) {
-	//i, l, r := -1, 0, len(c.hash)-1
-	//for l <= r {
-	//	m := int(uint(l+r) >> 1)
-	//	if c.hash[m] == h {
-	//		i = m
-	//		break
-	//	} else if c.hash[m] < h {
-	//		l = m + 1
-	//	} else if c.hash[m] > h {
-	//		l = m - 1
-	//	}
-	//}
-	i := sort.Search(len(c.hash), func(i int) bool {
-		return c.hash[i] == h
-	})
-	if c.hash[i] == h {
+	i, l, r := -1, 0, len(c.hash)-1
+	for l <= r {
+		m := int(uint(l+r) >> 1)
+		if c.hash[m] == h {
+			i = m
+			break
+		} else if c.hash[m] < h {
+			l = m + 1
+		} else if c.hash[m] > h {
+			r = m - 1
+		}
+	}
+	if i != -1 {
 		c.hash = append(c.hash[:i], c.hash[i+1:]...)
 	}
 }
 
-func (c *Consistent) Get(keys ...string) map[string][]string {
+func (c *Consistent) Get(keys ...string) *Atlas {
 	c.RLock()
 	defer c.RUnlock()
 
-	m := make(map[string][]string)
+	a := aPool.Get().(*Atlas)
 	if len(c.hash) == 0 {
-		return m
+		return a
 	}
 
 	for i := range keys {
 		h := hash(keys[i])
-		i := c.search(h)
-		if list, ok := m[c.ring[c.hash[i]]]; ok {
-			list = append(list, keys[i])
+		idx := c.search(h)
+		if list, ok := a.m[c.ring[c.hash[idx]]]; ok {
+			a.m[c.ring[c.hash[idx]]] = append(list, keys[i])
 			continue
 		}
-		m[c.ring[c.hash[i]]] = []string{keys[i]}
+		newList := akPool.Get().([]string)
+		a.m[c.ring[c.hash[idx]]] = append(newList, keys[i])
 	}
-	return m
+	return a
 }
 
 func (c *Consistent) search(h uint64) int {
@@ -138,4 +142,43 @@ func (c *Consistent) search(h uint64) int {
 
 func hash(k string) uint64 {
 	return xxhash.Sum64String(k)
+}
+
+func (c *Consistent) Update(star *Star) error {
+	c.Lock()
+	defer c.Unlock()
+
+	if !c.Stars.HasStar(star) {
+		return ErrNodeNotExist
+	}
+
+	if star.Load != c.Stars.Get(star.ID).Load {
+		c.Stars.Add(star) // overwrite
+		c.reBalance()
+	}
+
+	return nil
+}
+
+func (c *Consistent) reBalance() {
+	c.hash = c.hash[:0]
+	for _, star := range c.Stars.ListStar() {
+		for r := 0; r < star.Load; r++ {
+			h := hash(fmt.Sprintf(distributionFormat, star.ID, r))
+			c.hash = append(c.hash, h)
+			c.ring[h] = star.ID
+		}
+	}
+	sort.Slice(c.hash, func(i, j int) bool {
+		return c.hash[i] < c.hash[j]
+	})
+}
+
+func CalLoad(mul int) int {
+	if mul < MinMultiplier {
+		mul = MinMultiplier
+	} else if mul > MaxMultiplier {
+		mul = MaxMultiplier
+	}
+	return baseLoad * mul
 }
