@@ -3,6 +3,7 @@ package libra
 import (
 	"encoding/binary"
 	ml "github.com/hashicorp/memberlist"
+	"golang.org/x/sys/cpu"
 	"sync"
 )
 
@@ -14,15 +15,17 @@ var pool = sync.Pool{
 
 // Map simple string set based on map, not thread-safe
 type Map struct {
+	_     cpu.CacheLinePad
 	items map[string]*Star
+	_     cpu.CacheLinePad
 }
 
 func NewMap(nodes []*ml.Node) *Map {
 	m := pool.Get().(*Map)
 	for _, node := range nodes {
 		m.items[node.Name] = &Star{
-			ID:   node.Name,
-			Load: CalLoad(int(binary.LittleEndian.Uint16(node.Meta))),
+			ID:     node.Name,
+			Weight: CalWeight(int(binary.LittleEndian.Uint16(node.Meta))),
 		}
 	}
 	return m

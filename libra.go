@@ -3,6 +3,7 @@ package libra
 import (
 	"crypto/md5"
 	"encoding/binary"
+	"golang.org/x/sys/cpu"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,8 +14,8 @@ import (
 
 // Star node unit
 type Star struct {
-	ID   string
-	Load int
+	ID     string
+	Weight int
 }
 
 func NodeToStar(nodes []*ml.Node) []*Star {
@@ -27,8 +28,8 @@ func NodeToStar(nodes []*ml.Node) []*Star {
 
 func nodeToStar(node *ml.Node) *Star {
 	return &Star{
-		ID:   node.Name,
-		Load: CalLoad(int(binary.LittleEndian.Uint16(node.Meta))),
+		ID:     node.Name,
+		Weight: CalWeight(int(binary.LittleEndian.Uint16(node.Meta))),
 	}
 }
 
@@ -73,6 +74,9 @@ func New() (*Libra, error) {
 		"10.252.2.231:7946",
 		"10.252.2.231:7947",
 		"10.252.2.231:7948",
+		//"10.5.24.19:7946",
+		//"10.5.24.19:7947",
+		//"10.252.2.231:7948",
 	}, Config: mlConf}
 
 	return newLibra(conf)
@@ -195,7 +199,7 @@ func (l *Libra) Address() string {
 	return l.list.LocalNode().Address()
 }
 
-func (l *Libra) UpdateLoad(mul int) error {
+func (l *Libra) UpdateWeight(mul int) error {
 	if atomic.LoadUint64(&l.updateLoadInCD) == inCD {
 		return ErrUpdateLoadInCD
 	}
@@ -214,7 +218,6 @@ func (l *Libra) UpdateLoad(mul int) error {
 		return err
 	}
 
-
 	atomic.CompareAndSwapUint64(&l.updateLoadInCD, noCD, inCD)
 	go l.updateLoadCoolDown()
 	//l.logger.Infow("updated node", "len", len(l.c.hash), "node", l.c.hash, "node", "localhost")
@@ -222,13 +225,14 @@ func (l *Libra) UpdateLoad(mul int) error {
 }
 
 func (l *Libra) updateLoadCoolDown() {
-	time.Sleep(60*time.Second)
+	time.Sleep(60 * time.Second)
 	atomic.CompareAndSwapUint64(&l.updateLoadInCD, inCD, noCD)
 }
 
 var (
 	countM = 0
 	countK = 0
+	countO = 0
 )
 
 var aPool = sync.Pool{New: func() interface{} {
@@ -243,8 +247,16 @@ var akPool = sync.Pool{New: func() interface{} {
 	return []string{}
 }}
 
+var mPool = sync.Pool{New: func() interface{} {
+	countO++
+	println("alloc new k", countK)
+	return make(map[string][]string)
+}}
+
 type Atlas struct {
+	_ cpu.CacheLinePad
 	m map[string][]string
+	_ cpu.CacheLinePad
 }
 
 func (a *Atlas) Get(id string) []string {

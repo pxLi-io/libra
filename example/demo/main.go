@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime"
 	"time"
 )
 
@@ -29,20 +30,24 @@ func main() {
 	defer l.Shutdown()
 
 	var arr []string
-	for i := 0; i < 12800; i++ {
+	for i := 0; i < 12800000; i++ {
 		arr = append(arr, fmt.Sprintf("cluster_%d", i))
 	}
 
 	go func() {
 		count := 0
+		cur := time.Now()
 		for {
-			time.Sleep(10 * time.Millisecond)
+			//time.Sleep(1 * time.Millisecond)
 			a := l.Get(arr...)
 			if a != nil {
-				//fmt.Println("---", len(a.Get(l.LocalID())))
 				count++
-				if count % 100 == 0 {
+				if count%100 == 0 {
 					println("###", count)
+					fmt.Println("---", len(a.Get(l.LocalID())))
+					println(time.Since(cur).String())
+					println(runtime.NumGoroutine())
+					cur = time.Now()
 				}
 				a.Free()
 			} else {
@@ -52,12 +57,35 @@ func main() {
 		}
 	}()
 
+	//go func() {
+	//	count := 0
+	//	cur := time.Now()
+	//	for {
+	//		//time.Sleep(1 * time.Millisecond)
+	//		a := l.Get(arr...)
+	//		if a != nil {
+	//			count++
+	//			if count%100 == 0 {
+	//				println("2###", count)
+	//				fmt.Println("2---", len(a.Get(l.LocalID())))
+	//				println(2,time.Since(cur).String())
+	//				println(2,runtime.NumGoroutine())
+	//				cur = time.Now()
+	//			}
+	//			a.Free()
+	//		} else {
+	//			println("2$$$", count)
+	//		}
+	//		//fmt.Println(count)
+	//	}
+	//}()
+
 	times, i := 0, 2
 	for {
 		time.Sleep(10 * time.Second)
 		times++
 		fmt.Printf("fire update %d\n", times)
-		err = l.UpdateLoad(i)
+		err = l.UpdateWeight(i)
 		if err != nil {
 			println(err.Error())
 		}
