@@ -3,13 +3,13 @@ package libra
 import (
 	"crypto/md5"
 	"encoding/binary"
-	"golang.org/x/sys/cpu"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	ml "github.com/hashicorp/memberlist"
 	"go.uber.org/zap"
+	"golang.org/x/sys/cpu"
 )
 
 // Star node unit
@@ -34,7 +34,7 @@ func nodeToStar(node *ml.Node) *Star {
 }
 
 const (
-	noCD = iota
+	noCD uint64 = iota
 	inCD
 )
 

@@ -3,12 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/pxli-io/libra"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"runtime"
 	"time"
+
+	"github.com/pxli-io/libra"
 )
 
 var addr = flag.String("addr", "127.0.0.1:5005", "pprof address, format <host>:<port>")
@@ -57,28 +58,28 @@ func main() {
 		}
 	}()
 
-	//go func() {
-	//	count := 0
-	//	cur := time.Now()
-	//	for {
-	//		//time.Sleep(1 * time.Millisecond)
-	//		a := l.Get(arr...)
-	//		if a != nil {
-	//			count++
-	//			if count%100 == 0 {
-	//				println("2###", count)
-	//				fmt.Println("2---", len(a.Get(l.LocalID())))
-	//				println(2,time.Since(cur).String())
-	//				println(2,runtime.NumGoroutine())
-	//				cur = time.Now()
-	//			}
-	//			a.Free()
-	//		} else {
-	//			println("2$$$", count)
-	//		}
-	//		//fmt.Println(count)
-	//	}
-	//}()
+	go func() {
+		count := 0
+		cur := time.Now()
+		for {
+			//time.Sleep(1 * time.Millisecond)
+			a := l.Get(arr...)
+			if a != nil {
+				count++
+				if count%100 == 0 {
+					println("2###", count)
+					fmt.Println("2---", len(a.Get(l.LocalID())))
+					println(2,time.Since(cur).String())
+					println(2,runtime.NumGoroutine())
+					cur = time.Now()
+				}
+				a.Free()
+			} else {
+				println("2$$$", count)
+			}
+			//fmt.Println(count)
+		}
+	}()
 
 	times, i := 0, 2
 	for {

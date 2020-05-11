@@ -157,7 +157,7 @@ func (c *Consistent) Get(keys ...string) *Atlas {
 
 	var wg sync.WaitGroup
 	//chunkSize := (len(keys) + runtime.NumCPU() - 1) / runtime.NumCPU()
-	chunkSize := (len(keys) + 4 - 1) / 4
+	chunkSize := (len(keys) + 1 - 1) / 1
 
 	var divided [][]string
 	for i := 0; i < len(keys); i += chunkSize {
