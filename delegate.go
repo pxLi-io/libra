@@ -2,7 +2,7 @@ package libra
 
 import ml "github.com/hashicorp/memberlist"
 
-type Delegate struct{
+type Delegate struct {
 	*ml.Memberlist
 }
 

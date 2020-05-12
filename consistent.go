@@ -2,37 +2,44 @@ package libra
 
 import (
 	"fmt"
+	//"runtime"
 	"sort"
 	"sync"
 
-	"github.com/cespare/xxhash"
 	ml "github.com/hashicorp/memberlist"
+
+	"github.com/cespare/xxhash"
+	"golang.org/x/sys/cpu"
 )
 
 const (
 	distributionFormat = "%s-%d"
 
-	baseLoad      = 2
+	baseWeight    = 2
 	MinMultiplier = 1
-	MaxMultiplier = 1 << 4 // max load = 32
+	MaxMultiplier = 1 << 4 // max weight = 32
 )
 
 // Consistent simple consistent hashing
 // https://en.wikipedia.org/wiki/Consistent_hashing
 type Consistent struct {
+	_     cpu.CacheLinePad
 	Stars *Map
 
 	ring map[uint64]string // consistent hash ring
-	hash []uint64            // sorted hash slice
+	//ring sync.Map
+	hash []uint64          // sorted hash slice
 
 	sync.RWMutex
+	_ cpu.CacheLinePad
 }
 
 // NewConsistent ...
 func NewConsistent(nodes []*ml.Node) *Consistent {
 	c := &Consistent{
-		Stars:   NewMap(nodes),
-		ring:    make(map[uint64]string),
+		Stars: NewMap(nodes),
+		ring:  make(map[uint64]string),
+		//ring:  sync.Map{},
 	}
 
 	c.Add(NodeToStar(nodes)...)
@@ -58,10 +65,11 @@ func (c *Consistent) Add(stars ...*Star) {
 		}
 
 		c.Stars.Add(star)
-		for r := 0; r < star.Load; r++ {
+		for r := 0; r < star.Weight; r++ {
 			h := hash(fmt.Sprintf(distributionFormat, star.ID, r))
 			c.hash = append(c.hash, h)
 			c.ring[h] = star.ID
+			//c.ring.Store(h, star.ID)
 		}
 	}
 	if exist == len(stars) {
@@ -81,9 +89,10 @@ func (c *Consistent) Del(stars ...*Star) {
 		if !c.Stars.HasStar(star) {
 			continue
 		}
-		for r := 0; r < star.Load; r++ {
+		for r := 0; r < star.Weight; r++ {
 			h := hash(fmt.Sprintf(distributionFormat, star.ID, r))
 			delete(c.ring, h)
+			//c.ring.Delete(h)
 			c.delKeys(h)
 		}
 		c.Stars.Del(star)
@@ -117,16 +126,115 @@ func (c *Consistent) Get(keys ...string) *Atlas {
 		return a
 	}
 
-	for i := range keys {
-		h := hash(keys[i])
-		idx := c.search(h)
-		if list, ok := a.m[c.ring[c.hash[idx]]]; ok {
-			a.m[c.ring[c.hash[idx]]] = append(list, keys[i])
-			continue
+	//type Item struct {
+	//	idx int
+	//	k   string
+	//}
+
+	//for i := range keys {
+	//	//go func() {
+	//	//	h := hash(keys[i])
+	//	//	idx := c.search(h)
+	//	//	lock.Lock()
+	//	//	if list, ok := a.m[c.ring[c.hash[idx]]]; ok {
+	//	//		a.m[c.ring[c.hash[idx]]] = append(list, keys[i])
+	//	//		lock.Unlock()
+	//	//		return
+	//	//	}
+	//	//	newList := akPool.Get().([]string)
+	//	//	a.m[c.ring[c.hash[idx]]] = append(newList, keys[i])
+	//	//	lock.Unlock()
+	//	//}()
+	//	h := hash(keys[i])
+	//	idx := c.search(h)
+	//	if list, ok := a.m[c.ring[c.hash[idx]]]; ok {
+	//		a.m[c.ring[c.hash[idx]]] = append(list, keys[i])
+	//		continue
+	//	}
+	//	newList := akPool.Get().([]string)
+	//	a.m[c.ring[c.hash[idx]]] = append(newList, keys[i])
+	//}
+
+	var wg sync.WaitGroup
+	//chunkSize := (len(keys) + runtime.NumCPU() - 1) / runtime.NumCPU()
+	chunkSize := (len(keys) + 1 - 1) / 1
+
+	var divided [][]string
+	for i := 0; i < len(keys); i += chunkSize {
+		end := i + chunkSize
+
+		if end > len(keys) {
+			end = len(keys)
 		}
-		newList := akPool.Get().([]string)
-		a.m[c.ring[c.hash[idx]]] = append(newList, keys[i])
+
+		divided = append(divided, keys[i:end])
 	}
+	wg.Add(len(divided))
+
+	var arr []map[string][]string
+	for _, d := range divided {
+		d := d
+		arr = append(arr, make(map[string][]string))
+		go func() {
+			m := mPool.Get().(map[string][]string)
+			//m := make(map[string][]string)
+			for _, k := range d {
+				h := hash(k)
+				idx := c.search(h)
+				//star, _ := c.ring.Load(c.hash[idx])
+				//s := star.(string)
+				s, _ := c.ring[c.hash[idx]]
+				if list, ok := m[s]; ok {
+					m[s] = append(list, k)
+					continue
+				}
+				newList := akPool.Get().([]string)
+				m[s] = append(newList, k)
+			}
+			wg.Done()
+
+			for k, v := range m {
+				for i := range v {
+					v[i] = ""
+				}
+				v = v[:0]
+				akPool.Put(v)
+				delete(m, k)
+			}
+			mPool.Put(m)
+		}()
+	}
+	wg.Wait()
+	for _, m := range arr {
+		for k,v :=range m {
+			a.m[k] = v
+		}
+	}
+
+	//go func() {
+		//for item := range resCh {
+		//	if list, ok := a.m[c.ring[c.hash[item.idx]]]; ok {
+		//		a.m[c.ring[c.hash[item.idx]]] = append(list, item.k)
+		//		wg.Done()
+		//		continue
+		//	}
+		//	newList := akPool.Get().([]string)
+		//	a.m[c.ring[c.hash[item.idx]]] = append(newList, item.k)
+		//	wg.Done()
+		//}
+	//
+	//	for {
+	//		select {
+	//		case _, ok := <-resCh:
+	//			if ok {
+	//			wg.Done()
+	//
+	//			}
+	//		}
+	//	}
+	//}()
+
+	//wg.Wait()
 	return a
 }
 
@@ -152,7 +260,7 @@ func (c *Consistent) Update(star *Star) error {
 		return ErrNodeNotExist
 	}
 
-	if star.Load != c.Stars.Get(star.ID).Load {
+	if star.Weight != c.Stars.Get(star.ID).Weight {
 		c.Stars.Add(star) // overwrite
 		c.reBalance()
 	}
@@ -163,10 +271,11 @@ func (c *Consistent) Update(star *Star) error {
 func (c *Consistent) reBalance() {
 	c.hash = c.hash[:0]
 	for _, star := range c.Stars.ListStar() {
-		for r := 0; r < star.Load; r++ {
+		for r := 0; r < star.Weight; r++ {
 			h := hash(fmt.Sprintf(distributionFormat, star.ID, r))
 			c.hash = append(c.hash, h)
 			c.ring[h] = star.ID
+			//c.ring.Store(h, star.ID)
 		}
 	}
 	sort.Slice(c.hash, func(i, j int) bool {
@@ -174,11 +283,11 @@ func (c *Consistent) reBalance() {
 	})
 }
 
-func CalLoad(mul int) int {
+func CalWeight(mul int) int {
 	if mul < MinMultiplier {
 		mul = MinMultiplier
 	} else if mul > MaxMultiplier {
 		mul = MaxMultiplier
 	}
-	return baseLoad * mul
+	return baseWeight * mul
 }
